@@ -219,6 +219,57 @@ Docs: https://developers.booking.com/demand/docs
 
 ---
 
+## Per-room / per-rate detail — the model, and what's reachable
+
+The `AvailabilityCalendar` above is a **roll-up**: one `available` bool and one
+`avgPriceFormatted` ("from" / cheapest) per day, for the occupancy in your query. It
+hides the real structure booking.com uses underneath — **ARI** (Availability, Rates,
+Inventory):
+
+```
+Property
+ └─ Room type        physical inventory unit; has a count ("2 left")
+     └─ Rate plan     booking.com calls it a "block": room type + rate + policy
+         └─ Calendar   per date: { rooms available, price, restrictions }
+```
+
+- A room type can have **many rate plans** (block): e.g. non-refundable w/ breakfast
+  vs. flexible free-cancellation vs. member rate — each its own price.
+- **Rate** varies by date (season/weekend), **occupancy** (2 vs 4 guests), and
+  **length-of-stay**. The `$347→$509` weekend jump seen for `pool-villa-saraya` is the
+  *same* room at a date-dependent rate, not a different room.
+- **Restrictions**: `minLengthOfStay`/maxLOS, closed-to-arrival (CTA),
+  closed-to-departure (CTD), stop-sell. A `$0 / available:false` day = sold out or
+  restricted.
+
+### What the public GraphQL exposes (verified live 2026-07-09 by schema-probing)
+
+Introspection is **disabled** (`INTROSPECTION_DISABLED`), but `/dml/graphql` executes
+any *valid* GraphQL document and **validation errors fire before the backend**, which
+lets you map the schema from error messages. Findings:
+
+| Operation | Keyed by | Session (Irene backend) | Returns |
+|---|---|---|---|
+| `availabilityCalendar` | `pagenameDetails {countryCode, pagename}` | **not required** — returns data | day roll-up (available + "from" price) |
+| `propertyDetails(input: PropertyDetailsQueryInput!)` → `PropertyDetailsQueryOutput` | `hotelId: Int` | **required** — `Internal Server Error` without it | per-room × per-rate detail |
+| `searchQueries.search(input: SearchQueryInput!)` → `SearchQueryResult` | `dest_id`/`checkin`/… | **required** — `Internal Server Error` without it | search-result cards (per-property price) |
+
+So the per-room/per-rate grid **does** have a public surface (`propertyDetails`, keyed
+by the numeric `hotelId`, not the pagename), but unlike the calendar it is gated behind
+the "Irene" service, which needs a **real browser session** (AWS WAF token + cookies +
+CSRF). Without a session it returns HTTP 200 with `{"errors":[{"message":"Internal
+Server Error"}]}`. Booking also disabled "did you mean" field suggestions, so the room/
+rate subfield names cannot be enumerated blind — a live authenticated session is needed
+to capture them.
+
+**Practical two-step pattern:** use `availabilityCalendar` (cheap, unauthenticated) to
+scan a month for available days + "from" price; then, only for dates of interest, drive
+a real browser session to call `propertyDetails` (or parse the property-page room table
+/ `b_rooms` Apollo state) for the full room × rate breakdown. Step two is materially
+more expensive because of the session/anti-bot requirement.
+
+---
+
 ## Files
 
 - `scripts/availability-calendar.js` — runnable probe. `node scripts/availability-calendar.js ae pool-villa-saraya`.
