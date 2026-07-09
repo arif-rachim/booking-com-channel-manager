@@ -270,6 +270,57 @@ more expensive because of the session/anti-bot requirement.
 
 ---
 
+## Writing / syncing availability back TO booking.com
+
+Everything above is about *reading*. Pushing availability (the channel-manager job)
+is a different world — two options, very different capabilities:
+
+### Option A — iCal calendar sync (free, extranet, no API)
+
+- Set up **manually in the extranet**: *Calendar → Sync calendars → Import calendar*,
+  paste an external `.ics` URL. Booking.com then **pulls** that URL itself.
+- **Polling, not push**: booking refreshes imported calendars roughly **every 2–6 hours**
+  (sometimes longer). Not real-time. There is a manual **"Refresh"** button per imported
+  calendar — that button hits an internal, session-gated `admin.booking.com` endpoint; it
+  is **not a public API** and can't be reliably automated.
+- **Availability-only, one-directional**: iCal `VEVENT`s carry only blocked/free dates.
+  No rates, no inventory counts, no guest data.
+- **No API** exists to register an iCal URL or trigger its sync programmatically.
+
+### Option B — Connectivity API (real-time push, contract required)
+
+The official programmatic path. XML "OTA" endpoints on `supply-xml.booking.com`:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST https://supply-xml.booking.com/hotels/ota/OTA_HotelAvailNotif` | push availability / inventory + restrictions (open/close dates, rooms to sell, minLOS, CTA/CTD) |
+| `POST .../hotels/ota/OTA_HotelRateAmountNotif` | push prices/rates |
+| Reservations API (`secure-supply-xml.booking.com`) | retrieve incoming reservations (near real-time) |
+
+**Can we just call `OTA_HotelAvailNotif`?** No. The endpoint is a plain HTTPS POST, but
+it is fully gated (401/403 without the below), unlike the public `dml/graphql` calendar:
+
+- Must be an onboarded **Connectivity Partner** — and booking.com is currently **pausing
+  onboarding of new connectivity providers "until further notice."**
+- Needs a **machine account** (created in the Connectivity Portal during onboarding),
+  property-level. Auth is either credential-based or token-based (Client ID + Secret →
+  token, 1-hour expiry, max 30 tokens/hour); TLS 1.2 required.
+- The **property owner must grant a "connection"** (permission) to your machine account
+  via the extranet before you can manage their unit.
+- Must pass **certification** in a test environment before production access.
+
+Practical takeaway: a single property owner usually can't call `OTA_HotelAvailNotif`
+directly — you either go through an already-certified **channel manager**, or use the
+free **iCal** pull (Option A) and accept the multi-hour delay. iCal has **no** endpoint;
+the Connectivity API has the endpoints but is contract/certification-gated.
+
+Refs: [Connectivity docs](https://developers.booking.com/connectivity/docs) ·
+[OTA_HotelAvailNotif](https://developers.booking.com/connectivity/docs/ota-hotelavailnotif) ·
+[token auth](https://developers.booking.com/connectivity/docs/token-based-authentication) ·
+[partner requirements](https://connectivity.booking.com/s/article/Requirements-for-becoming-a-Booking-com-Connectivity-Partner).
+
+---
+
 ## Files
 
 - `scripts/availability-calendar.js` — runnable probe. `node scripts/availability-calendar.js ae pool-villa-saraya`.
